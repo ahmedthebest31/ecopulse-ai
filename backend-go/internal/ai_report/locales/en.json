@@ -1,0 +1,3 @@
+{
+  "body": "Total energy consumption across {facility_count} monitored facilities reached {total_energy_kwh} kWh, with estimated emissions of {total_carbon_kg} kg of CO2. {critical_spike_count} critical consumption spikes were detected and {maintenance_count} predictive maintenance alerts were issued. Peak-hour energy reached {peak_energy_kwh} kWh with a maximum demand of {max_demand_kw} kW. Recommendation: shift high-load equipment outside the 18:00-22:00 peak window and prioritize maintenance on flagged equipment to reduce demand charges and carbon impact."
+}
