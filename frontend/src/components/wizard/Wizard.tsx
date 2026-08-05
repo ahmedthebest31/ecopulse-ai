@@ -5,16 +5,16 @@ import i18n, { setDocumentLanguage } from '../../i18n'
 import { useAppState } from '../../state/useAppState'
 import type { AppState } from '../../state/appStateDefaults'
 import type { Tier } from '../../types'
+import { GeminiKeyField } from '../GeminiKeyField'
+import { useGeminiStatus } from '../../lib/geminiStatus'
+import { isValidEmail, isValidWebhookUrl } from '../../lib/validation'
 
 interface WizardProps {
   open: boolean
   onClose: () => void
 }
 
-const STEP_COUNT = 4
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const WEBHOOK_RE = /^https?:\/\/.+/i
+const STEP_COUNT = 5
 
 const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
@@ -31,11 +31,19 @@ export function Wizard({ open, onClose }: WizardProps) {
 function WizardDialog({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation()
   const { state, update } = useAppState()
+  const { hasValidEnvKey } = useGeminiStatus()
   const [draft, setDraft] = useState<AppState>(state)
   const [step, setStep] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
+
+  const emailError =
+    draft.email.trim() !== '' && !isValidEmail(draft.email) ? t('wizard.errorEmail') : null
+  const webhookError =
+    draft.webhookUrl.trim() !== '' && !isValidWebhookUrl(draft.webhookUrl)
+      ? t('wizard.errorWebhook')
+      : null
 
   useEffect(() => {
     dialogRef.current?.focus()
@@ -110,11 +118,11 @@ function WizardDialog({ onClose }: { onClose: () => void }) {
       }
     }
     if (current === 3) {
-      if (draft.email.trim() !== '' && !EMAIL_RE.test(draft.email.trim())) {
-        return t('wizard.errorEmail')
+      if (emailError) {
+        return emailError
       }
-      if (draft.webhookUrl.trim() !== '' && !WEBHOOK_RE.test(draft.webhookUrl.trim())) {
-        return t('wizard.errorWebhook')
+      if (webhookError) {
+        return webhookError
       }
     }
     return null
@@ -177,6 +185,7 @@ function WizardDialog({ onClose }: { onClose: () => void }) {
     t('wizard.s2Title'),
     t('wizard.s3Title'),
     t('wizard.s4Title'),
+    t('wizard.s5Title'),
   ]
 
   const isLastStep = step === STEP_COUNT - 1
@@ -548,8 +557,23 @@ function WizardDialog({ onClose }: { onClose: () => void }) {
                   autoComplete="email"
                   value={draft.email}
                   onChange={(event) => updateDraft({ email: event.target.value })}
-                  className={`mt-1 ${inputClass}`}
+                  aria-invalid={emailError ? true : undefined}
+                  aria-describedby={emailError ? 'notification-email-error' : undefined}
+                  className={`mt-1 ${inputClass} ${
+                    emailError
+                      ? 'border-rose-500 focus:border-rose-500 focus:ring-rose-500 dark:border-rose-500'
+                      : ''
+                  }`}
                 />
+                {emailError ? (
+                  <p
+                    id="notification-email-error"
+                    role="alert"
+                    className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400"
+                  >
+                    {emailError}
+                  </p>
+                ) : null}
               </div>
 
               <div className="max-w-sm">
@@ -566,9 +590,40 @@ function WizardDialog({ onClose }: { onClose: () => void }) {
                   autoComplete="url"
                   value={draft.webhookUrl}
                   onChange={(event) => updateDraft({ webhookUrl: event.target.value })}
-                  className={`mt-1 ${inputClass}`}
+                  aria-invalid={webhookError ? true : undefined}
+                  aria-describedby={webhookError ? 'notification-webhook-error' : undefined}
+                  className={`mt-1 ${inputClass} ${
+                    webhookError
+                      ? 'border-rose-500 focus:border-rose-500 focus:ring-rose-500 dark:border-rose-500'
+                      : ''
+                  }`}
                 />
+                {webhookError ? (
+                  <p
+                    id="notification-webhook-error"
+                    role="alert"
+                    className="mt-1 text-xs font-medium text-rose-600 dark:text-rose-400"
+                  >
+                    {webhookError}
+                  </p>
+                ) : null}
               </div>
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="space-y-5">
+              <GeminiKeyField
+                hasValidEnvKey={hasValidEnvKey}
+                source={draft.geminiKeySource}
+                customKey={draft.geminiCustomKey}
+                onChange={(patch) =>
+                  updateDraft({
+                    geminiKeySource: patch.source,
+                    geminiCustomKey: patch.customKey,
+                  })
+                }
+              />
             </div>
           )}
         </div>

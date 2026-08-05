@@ -216,6 +216,16 @@ func (s *Server) buildReportMetrics() ai_report.Metrics {
 	}
 }
 
+// handleConfigGeminiStatus reports whether a GEMINI_API_KEY is set in the
+// server environment, so the frontend can choose between the system default
+// key and a user-supplied custom key. The value is a plain boolean; the key
+// itself is never exposed.
+func (s *Server) handleConfigGeminiStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"has_valid_env_key": s.cfg.GeminiAPIKey != "",
+	})
+}
+
 func (s *Server) handleReportSummary(w http.ResponseWriter, r *http.Request) {
 	var req reportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -227,6 +237,10 @@ func (s *Server) handleReportSummary(w http.ResponseWriter, r *http.Request) {
 		computed := s.buildReportMetrics()
 		metrics = &computed
 	}
-	result := s.gemini.GenerateSummary(r.Context(), req.Locale, *metrics)
+	client := s.gemini
+	if customKey := r.Header.Get("x-goog-api-key"); customKey != "" {
+		client = client.WithAPIKey(customKey)
+	}
+	result := client.GenerateSummary(r.Context(), req.Locale, *metrics)
 	writeJSON(w, http.StatusOK, result)
 }

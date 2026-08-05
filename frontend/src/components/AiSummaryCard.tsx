@@ -12,16 +12,21 @@ export function AiSummaryCard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const customKey =
+    state.geminiKeySource === 'custom' && state.geminiCustomKey.trim() !== ''
+      ? state.geminiCustomKey.trim()
+      : undefined
+
   const load = useCallback(async () => {
     try {
-      const response = await postReport(state.language)
+      const response = await postReport(state.language, customKey)
       setResult(response)
     } catch {
       setError(t('dashboard.aiError'))
     } finally {
       setLoading(false)
     }
-  }, [state.language, t])
+  }, [state.language, customKey, t])
 
   useEffect(() => {
     void Promise.resolve().then(load)

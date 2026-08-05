@@ -98,6 +98,21 @@ export function Dashboard({ onStatusChange }: DashboardProps) {
 
   const isDark = state.theme === 'dark'
 
+  const printReport = () => {
+    const originalTitle = document.title
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    document.title = `EcoPulse_AI_Report_${year}-${month}-${day}`
+    const restoreTitle = () => {
+      document.title = originalTitle
+      window.removeEventListener('afterprint', restoreTitle)
+    }
+    window.addEventListener('afterprint', restoreTitle)
+    window.print()
+  }
+
   if (loading) {
     return (
       <p className="py-12 text-center text-slate-600 dark:text-slate-400" role="status">
@@ -133,7 +148,7 @@ export function Dashboard({ onStatusChange }: DashboardProps) {
         </h1>
         <button
           type="button"
-          onClick={() => window.print()}
+          onClick={printReport}
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
         >
           <Printer size={15} aria-hidden="true" />

@@ -13,6 +13,10 @@ function mergeWithDefaults(stored: Partial<AppState>): AppState {
     timeFormat: stored.timeFormat === '12h' || stored.timeFormat === '24h' ? stored.timeFormat : base.timeFormat,
     tariffMode: stored.tariffMode === 'flat' || stored.tariffMode === 'tiered' ? stored.tariffMode : base.tariffMode,
     tiers: Array.isArray(stored.tiers) && stored.tiers.length > 0 ? stored.tiers : base.tiers,
+    geminiKeySource:
+      stored.geminiKeySource === 'system' || stored.geminiKeySource === 'custom'
+        ? stored.geminiKeySource
+        : base.geminiKeySource,
   }
 }
 

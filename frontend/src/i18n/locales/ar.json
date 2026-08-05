@@ -33,6 +33,14 @@
     "s3Desc": "كشف الارتفاعات وساعات الذروة وعامل الكربون",
     "s4Title": "الإشعارات",
     "s4Desc": "جهات الاتصال بالبريد الإلكتروني أو الويب هوك",
+    "s5Title": "الذكاء الاصطناعي والتكاملات",
+    "s5Desc": "مفتاح Gemini API للملخصات التنفيذية",
+    "geminiLabel": "مفتاح Gemini API",
+    "geminiUseSystem": "استخدام مفتاح النظام الافتراضي",
+    "geminiUseCustom": "إدخال مفتاح مخصص",
+    "geminiCustomLabel": "مفتاح Gemini API المخصص",
+    "geminiGetKey": "احصل على مفتاح API من Google AI Studio",
+    "geminiHint": "الخادم يحتوي بالفعل على مفتاح افتراضي مكوّن.",
     "languageLabel": "لغة الواجهة",
     "timezoneLabel": "المنطقة الزمنية",
     "timeFormatLabel": "تنسيق الوقت",
@@ -120,5 +128,17 @@
   "common": {
     "facilities": "مرافق",
     "activeAlerts": "تنبيهات"
+  },
+  "settings": {
+    "title": "الإعدادات",
+    "subtitle": "راجع وعدّل الإعدادات النشطة",
+    "sectionRegional": "المنطقة واللغة",
+    "sectionTariff": "التعرفة والفواتير",
+    "sectionThresholds": "الحدود",
+    "sectionNotifications": "الإشعارات",
+    "sectionIntegrations": "الذكاء الاصطناعي والتكاملات",
+    "runWizard": "إعادة تشغيل معالج الإعداد",
+    "back": "العودة إلى لوحة التحكم",
+    "autoSaved": "يتم حفظ التغييرات تلقائياً."
   }
 }

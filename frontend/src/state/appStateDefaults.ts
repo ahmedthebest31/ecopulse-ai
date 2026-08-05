@@ -6,6 +6,7 @@ export const TREES_ABSORPTION_KG_PER_YEAR = 21.77
 export type Theme = 'dark' | 'light'
 export type TimeFormat = '12h' | '24h'
 export type TariffMode = 'flat' | 'tiered'
+export type GeminiKeySource = 'system' | 'custom'
 
 export interface AppState {
   configured: boolean
@@ -23,6 +24,8 @@ export interface AppState {
   carbonFactor: number
   email: string
   webhookUrl: string
+  geminiKeySource: GeminiKeySource
+  geminiCustomKey: string
 }
 
 export const DEFAULT_EGYPTIAN_TIERS: Tier[] = [
@@ -53,6 +56,8 @@ export const DEFAULT_STATE: AppState = {
   carbonFactor: 0.85,
   email: '',
   webhookUrl: '',
+  geminiKeySource: 'system',
+  geminiCustomKey: '',
 }
 
 export const STORAGE_KEY = 'ecopulse.settings.v1'

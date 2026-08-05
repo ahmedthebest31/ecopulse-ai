@@ -113,3 +113,7 @@ export interface ReportResult {
   model?: string
   warning?: string
 }
+
+export interface GeminiStatusResult {
+  has_valid_env_key: boolean
+}

@@ -68,6 +68,15 @@ func NewClient(apiKey, model string) *Client {
 	}
 }
 
+// WithAPIKey returns a copy of the client that uses the given key for its
+// next call, letting a request-scoped key from a client header override the
+// environment-configured default.
+func (c *Client) WithAPIKey(apiKey string) *Client {
+	clone := *c
+	clone.apiKey = apiKey
+	return &clone
+}
+
 // GenerateSummary returns a localized executive summary for the metrics. If
 // no API key is configured, or the upstream call fails, it returns the
 // templated fallback text with Source "fallback".

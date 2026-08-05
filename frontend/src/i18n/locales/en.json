@@ -33,6 +33,14 @@
     "s3Desc": "Spike detection, peak hours, carbon factor",
     "s4Title": "Notifications",
     "s4Desc": "Email and webhook contacts",
+    "s5Title": "AI & Integrations",
+    "s5Desc": "Gemini API key for executive summaries",
+    "geminiLabel": "Gemini API key",
+    "geminiUseSystem": "Use system default API key",
+    "geminiUseCustom": "Enter custom API key",
+    "geminiCustomLabel": "Custom Gemini API key",
+    "geminiGetKey": "Get an API key at Google AI Studio",
+    "geminiHint": "The server already has a system default key configured.",
     "languageLabel": "Interface language",
     "timezoneLabel": "Timezone",
     "timeFormatLabel": "Time format",
@@ -120,5 +128,17 @@
   "common": {
     "facilities": "facilities",
     "activeAlerts": "alerts"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Review and edit your active configuration",
+    "sectionRegional": "Regional & Language",
+    "sectionTariff": "Tariff & Billing",
+    "sectionThresholds": "Thresholds",
+    "sectionNotifications": "Notifications",
+    "sectionIntegrations": "AI & Integrations",
+    "runWizard": "Re-run Setup Wizard",
+    "back": "Back to Dashboard",
+    "autoSaved": "Changes are saved automatically."
   }
 }

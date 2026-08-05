@@ -13,6 +13,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/telemetry", s.handleTelemetry)
 	mux.HandleFunc("POST /api/tariff/calculate", s.handleTariffCalculate)
 	mux.HandleFunc("GET /api/analytics/spikes", s.handleAnalyticsSpikes)
+	mux.HandleFunc("GET /api/config/gemini-status", s.handleConfigGeminiStatus)
 	mux.HandleFunc("POST /api/report/summary", s.handleReportSummary)
 	return withCORS(withLogging(s.cfg.Logger, mux))
 }
