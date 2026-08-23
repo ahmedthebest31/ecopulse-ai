@@ -109,6 +109,34 @@ func TestValidationErrors(t *testing.T) {
 	}
 }
 
+func TestRejectsAbsurdMagnitudes(t *testing.T) {
+	// Regression: kwh=1e308 used to overflow total to +Inf and produce an
+	// unmarshalable payload; every case here must return an error.
+	cases := []Request{
+		{KWh: 1e308, Mode: "flat", FlatRateEGP: 2.5},
+		{KWh: math.Inf(1), Mode: "flat", FlatRateEGP: 2.5},
+		{KWh: math.NaN(), Mode: "tiered"},
+		{KWh: 1e9 + 1, Mode: "tiered"}, // above maxKWh cap
+		{KWh: 100, Mode: "flat", FlatRateEGP: math.Inf(1)},
+		{KWh: 100, Mode: "flat", FlatRateEGP: math.NaN()},
+		// Note: USDPerEGP <= 0 (including -Inf) maps to the default rate by
+		// contract, so only positive out-of-range values are rejected here.
+		{KWh: 100, Mode: "flat", FlatRateEGP: 2.5, USDPerEGP: 2e6}, // above maxRateEGP cap
+		{KWh: 100, Mode: "tiered", Tiers: []Tier{{LowerKWh: 0, UpperKWh: -5, RateEGP: 1}}},
+		{KWh: 100, Mode: "tiered", Tiers: []Tier{{LowerKWh: 0, UpperKWh: 50, RateEGP: math.NaN()}}},
+		{KWh: 100, Mode: "tiered", Tiers: []Tier{{LowerKWh: 0, UpperKWh: 50, RateEGP: 1}, {LowerKWh: 50, UpperKWh: 0, RateEGP: -math.Inf(1)}}},
+	}
+	for i, tc := range cases {
+		bd, err := Calculate(tc)
+		if err == nil {
+			t.Fatalf("case %d: expected an error, got none (breakdown %+v)", i, bd)
+		}
+		if bd.Tiers != nil {
+			t.Fatalf("case %d: expected empty breakdown on error, got %+v", i, bd)
+		}
+	}
+}
+
 func TestUSDAssertion(t *testing.T) {
 	bd, err := Calculate(Request{KWh: 100, Mode: "flat", FlatRateEGP: 48.5, USDPerEGP: 48.5})
 	if err != nil {

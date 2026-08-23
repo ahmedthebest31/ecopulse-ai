@@ -25,6 +25,7 @@ type Config struct {
 	USDPerEGP         float64
 	GeminiAPIKey      string
 	GeminiModel       string
+	AllowedOrigins    []string
 	Logger            *log.Logger
 }
 
@@ -58,7 +59,7 @@ func NewServer(cfg Config) *Server {
 	}
 	return &Server{
 		cfg:    cfg,
-		gemini: ai_report.NewClient(cfg.GeminiAPIKey, cfg.GeminiModel),
+		gemini: ai_report.NewClient(cfg.GeminiAPIKey, cfg.GeminiModel).WithLogger(cfg.Logger),
 	}
 }
 
@@ -85,18 +86,44 @@ func (s *Server) LoadTelemetry() error {
 	return nil
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
+// maxBodyBytes caps JSON request bodies so one request cannot force the
+// server to buffer an arbitrarily large payload.
+const maxBodyBytes = 64 << 10 // 64 KiB
+
+// writeJSON encodes payload as the JSON response body and logs any encoding
+// failure. Headers are already committed when Encode runs, so the error can
+// only be reported to the server log, never silently discarded.
+func (s *Server) writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		s.cfg.Logger.Printf("failed to encode JSON response: %v", err)
+	}
 }
 
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
+func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
+	s.writeJSON(w, status, map[string]string{"error": message})
+}
+
+// decodeJSONBody decodes a size-capped JSON request body into dst. On any
+// failure it logs the underlying cause and writes a generic 400 response so
+// internal error detail is never echoed to clients.
+func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err := decoder.Decode(dst); err != nil {
+		s.cfg.Logger.Printf("invalid JSON request on %s: %v", r.URL.Path, err)
+		s.writeError(w, http.StatusBadRequest, "invalid JSON request body")
+		return err
+	}
+	if decoder.More() {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON request body: unexpected trailing data")
+		return fmt.Errorf("trailing data after JSON value")
+	}
+	return nil
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
+	s.writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
 		"service": "ecopulse-ai-backend",
 	})
@@ -113,7 +140,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	if startParam != "" {
 		parsed, err := time.Parse(time.RFC3339, startParam)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "start must be an RFC3339 timestamp, e.g. 2026-08-03T18:00:00+03:00")
+			s.writeError(w, http.StatusBadRequest, "start must be an RFC3339 timestamp, e.g. 2026-08-03T18:00:00+03:00")
 			return
 		}
 		start = &parsed
@@ -121,17 +148,21 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	if endParam != "" {
 		parsed, err := time.Parse(time.RFC3339, endParam)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "end must be an RFC3339 timestamp, e.g. 2026-08-03T22:00:00+03:00")
+			s.writeError(w, http.StatusBadRequest, "end must be an RFC3339 timestamp, e.g. 2026-08-03T22:00:00+03:00")
 			return
 		}
 		end = &parsed
+	}
+	if start != nil && end != nil && end.Before(*start) {
+		s.writeError(w, http.StatusBadRequest, "end must not be earlier than start")
+		return
 	}
 
 	limit := 0
 	if limitParam != "" {
 		parsedLimit, err := strconv.Atoi(limitParam)
 		if err != nil || parsedLimit < 0 {
-			writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+			s.writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
 			return
 		}
 		limit = parsedLimit
@@ -160,7 +191,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	s.writeJSON(w, http.StatusOK, map[string]any{
 		"total_records": len(s.file.Records),
 		"count":         len(selected),
 		"filters": map[string]string{
@@ -174,8 +205,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTariffCalculate(w http.ResponseWriter, r *http.Request) {
 	var req tariff.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	if err := s.decodeJSONBody(w, r, &req); err != nil {
 		return
 	}
 	if req.USDPerEGP <= 0 && s.cfg.USDPerEGP > 0 {
@@ -183,17 +213,17 @@ func (s *Server) handleTariffCalculate(w http.ResponseWriter, r *http.Request) {
 	}
 	breakdown, err := tariff.Calculate(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, breakdown)
+	s.writeJSON(w, http.StatusOK, breakdown)
 }
 
 func (s *Server) handleAnalyticsSpikes(w http.ResponseWriter, _ *http.Request) {
 	result := analytics.Analyze(s.file.Records, analytics.Config{
 		SpikeThresholdPercent: s.cfg.SpikeThresholdPct,
 	})
-	writeJSON(w, http.StatusOK, result)
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 type reportRequest struct {
@@ -221,15 +251,14 @@ func (s *Server) buildReportMetrics() ai_report.Metrics {
 // key and a user-supplied custom key. The value is a plain boolean; the key
 // itself is never exposed.
 func (s *Server) handleConfigGeminiStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
+	s.writeJSON(w, http.StatusOK, map[string]bool{
 		"has_valid_env_key": s.cfg.GeminiAPIKey != "",
 	})
 }
 
 func (s *Server) handleReportSummary(w http.ResponseWriter, r *http.Request) {
 	var req reportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	if err := s.decodeJSONBody(w, r, &req); err != nil {
 		return
 	}
 	metrics := req.Metrics
@@ -242,5 +271,5 @@ func (s *Server) handleReportSummary(w http.ResponseWriter, r *http.Request) {
 		client = client.WithAPIKey(customKey)
 	}
 	result := client.GenerateSummary(r.Context(), req.Locale, *metrics)
-	writeJSON(w, http.StatusOK, result)
+	s.writeJSON(w, http.StatusOK, result)
 }

@@ -20,6 +20,13 @@ import (
 // a conversion rate.
 const DefaultUSDPerEGP = 48.5
 
+// maxKWh bounds the accepted consumption so downstream money math cannot
+// overflow to +/-Inf (which would otherwise produce an unmarshalable payload).
+const maxKWh = 1e9
+
+// maxRateEGP bounds per-kWh rates and the USD conversion factor.
+const maxRateEGP = 1e6
+
 // OpenUpperBound marks a tier that extends to infinity (no upper limit).
 // Client-provided upper bounds at or above this threshold are treated as open.
 const OpenUpperBound = 1e12
@@ -82,6 +89,41 @@ func round4(value float64) float64 {
 	return math.Round(value*10000) / 10000
 }
 
+// ensureBounded rejects NaN/Inf, negative values, and magnitudes above max so
+// that a single absurd input can never poison the billing math downstream.
+func ensureBounded(value float64, name string, max float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("%s must be a finite number", name)
+	}
+	if value < 0 {
+		return fmt.Errorf("%s must be non-negative", name)
+	}
+	if value > max {
+		return fmt.Errorf("%s must not exceed %g", name, max)
+	}
+	return nil
+}
+
+// validate reports whether every numeric field of the breakdown is finite.
+// It is the last line of defense: even if an overflow path slips past input
+// validation, the caller gets an error instead of an unmarshalable payload.
+func (b Breakdown) validate() error {
+	const outOfRange = "computed billing result is out of representable range"
+	for _, v := range []float64{b.KWh, b.TotalCostEGP, b.TotalCostUSD, b.EffectiveRateEGP} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return errors.New(outOfRange)
+		}
+	}
+	for _, line := range b.Tiers {
+		for _, v := range []float64{line.KWhUsed, line.CostEGP, line.CostUSD} {
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return errors.New(outOfRange)
+			}
+		}
+	}
+	return nil
+}
+
 func tierLabel(t Tier) string {
 	if t.UpperKWh >= OpenUpperBound {
 		return fmt.Sprintf("%.0f+ kWh", t.LowerKWh)
@@ -104,7 +146,23 @@ func normalizeTiers(tiers []Tier) ([]Tier, error) {
 		if normalized[i].LowerKWh < 0 || normalized[i].RateEGP < 0 {
 			return nil, errors.New("tier lower bounds and rates must be non-negative")
 		}
-		if normalized[i].UpperKWh >= OpenUpperBound || normalized[i].UpperKWh <= 0 {
+		if normalized[i].UpperKWh < 0 {
+			return nil, errors.New("tier upper bounds must be non-negative")
+		}
+		if err := ensureBounded(normalized[i].LowerKWh, "tier lower bound", maxKWh); err != nil {
+			return nil, err
+		}
+		if err := ensureBounded(normalized[i].RateEGP, "tier rate", maxRateEGP); err != nil {
+			return nil, err
+		}
+		// Bounds that will be coerced to open-ended are exempt from the
+		// magnitude cap; concrete upper bounds must stay within maxKWh.
+		if normalized[i].UpperKWh > 0 && normalized[i].UpperKWh < OpenUpperBound {
+			if err := ensureBounded(normalized[i].UpperKWh, "tier upper bound", maxKWh); err != nil {
+				return nil, err
+			}
+		}
+		if normalized[i].UpperKWh >= OpenUpperBound || normalized[i].UpperKWh == 0 {
 			normalized[i].UpperKWh = math.MaxFloat64
 		}
 	}
@@ -126,19 +184,41 @@ func normalizeTiers(tiers []Tier) ([]Tier, error) {
 }
 
 // Calculate produces an itemized cost breakdown for the given request.
+// Input magnitudes are bounded and the computed breakdown is verified to be
+// finite, so callers never receive NaN/Inf values that cannot be marshaled
+// to JSON.
 func Calculate(req Request) (Breakdown, error) {
+	bd, err := calculate(req)
+	if err != nil {
+		return Breakdown{}, err
+	}
+	if err := bd.validate(); err != nil {
+		return Breakdown{}, err
+	}
+	return bd, nil
+}
+
+func calculate(req Request) (Breakdown, error) {
 	if req.KWh < 0 {
 		return Breakdown{}, errors.New("kwh must be non-negative")
+	}
+	if err := ensureBounded(req.KWh, "kwh", maxKWh); err != nil {
+		return Breakdown{}, err
 	}
 	usdPerEGP := req.USDPerEGP
 	if usdPerEGP <= 0 {
 		usdPerEGP = DefaultUSDPerEGP
+	} else if err := ensureBounded(usdPerEGP, "usd_per_egp", maxRateEGP); err != nil {
+		return Breakdown{}, err
 	}
 
 	switch req.Mode {
 	case "flat":
 		if req.FlatRateEGP <= 0 {
 			return Breakdown{}, errors.New("flat_rate_egp must be positive")
+		}
+		if err := ensureBounded(req.FlatRateEGP, "flat_rate_egp", maxRateEGP); err != nil {
+			return Breakdown{}, err
 		}
 		total := req.KWh * req.FlatRateEGP
 		total = round4(total)

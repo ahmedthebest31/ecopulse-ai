@@ -15,14 +15,33 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/analytics/spikes", s.handleAnalyticsSpikes)
 	mux.HandleFunc("GET /api/config/gemini-status", s.handleConfigGeminiStatus)
 	mux.HandleFunc("POST /api/report/summary", s.handleReportSummary)
-	return withCORS(withLogging(s.cfg.Logger, mux))
+	return s.withCORS(withLogging(s.cfg.Logger, mux))
 }
 
-// withCORS adds permissive cross-origin headers and answers preflight requests
-// so the React frontend can call the API from a different origin.
-func withCORS(next http.Handler) http.Handler {
+// withCORS answers preflight requests and emits cross-origin headers so the
+// React frontend can call the API from a different origin. With no configured
+// origins the behavior stays fully permissive ("*" wildcard, matching the
+// original contract); when cfg.AllowedOrigins lists specific origins, only
+// those are echoed back.
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	wildcard := len(s.cfg.AllowedOrigins) == 0
+	for _, origin := range s.cfg.AllowedOrigins {
+		if origin == "*" {
+			wildcard = true
+		}
+	}
+	allowed := make(map[string]bool, len(s.cfg.AllowedOrigins))
+	for _, origin := range s.cfg.AllowedOrigins {
+		allowed[origin] = true
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		switch {
+		case wildcard:
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		case allowed[r.Header.Get("Origin")]:
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Add("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-goog-api-key")
 		w.Header().Set("Access-Control-Max-Age", "86400")

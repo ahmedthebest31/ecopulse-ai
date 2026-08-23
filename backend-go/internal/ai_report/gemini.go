@@ -15,9 +15,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const defaultModel = "gemini-3.5-flash"
@@ -52,6 +54,7 @@ type Client struct {
 	model   string
 	baseURL string
 	http    *http.Client
+	logger  *log.Logger
 }
 
 // NewClient builds a Gemini client. An empty apiKey disables live generation
@@ -77,6 +80,24 @@ func (c *Client) WithAPIKey(apiKey string) *Client {
 	return &clone
 }
 
+// WithLogger returns a copy of the client that reports upstream failures to l.
+// The API key is never included in log output.
+func (c *Client) WithLogger(l *log.Logger) *Client {
+	clone := *c
+	clone.logger = l
+	return &clone
+}
+
+// logf writes to the injected logger, falling back to the standard logger so
+// upstream failures are never completely invisible to operators.
+func (c *Client) logf(format string, args ...any) {
+	logger := c.logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	logger.Printf(format, args...)
+}
+
 // GenerateSummary returns a localized executive summary for the metrics. If
 // no API key is configured, or the upstream call fails, it returns the
 // templated fallback text with Source "fallback".
@@ -91,6 +112,7 @@ func (c *Client) GenerateSummary(ctx context.Context, locale string, m Metrics) 
 	}
 	text, err := c.generate(ctx, locale, m)
 	if err != nil {
+		c.logf("Gemini request failed; returning fallback text: %v", err)
 		return Result{
 			Locale:  locale,
 			Summary: c.fallbackText(locale, m),
@@ -225,9 +247,15 @@ func (c *Client) generate(ctx context.Context, locale string, m Metrics) (string
 	return text, nil
 }
 
+// truncate shortens value to at most max bytes without splitting a UTF-8
+// rune in half, so Arabic error text stays valid when clipped.
 func truncate(value string, max int) string {
 	if len(value) <= max {
 		return value
 	}
-	return value[:max] + "..."
+	cut := value[:max]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }
