@@ -108,3 +108,69 @@ func TestAnalyzeEmptyInput(t *testing.T) {
 		t.Fatalf("default threshold should be 30, got %v", result.SpikeThresholdPct)
 	}
 }
+
+func TestAnalyzeRatioDetectionIndependentOfFlags(t *testing.T) {
+	records := []TelemetryRecord{
+		// High ratio WITHOUT any flag: must be detected by magnitude.
+		rec("2026-08-03T09:00:00+03:00", "facility-001", "Cairo Tower", "PUMP-1", "none", "", 1.45, 90, 1.5, false),
+		// Flagged forced_spike but BELOW threshold: must NOT be detected.
+		rec("2026-08-03T10:00:00+03:00", "facility-001", "Cairo Tower", "HVAC-A", "forced_spike", "critical", 1.20, 70, 1.2, false),
+	}
+	result := Analyze(records, Config{SpikeThresholdPercent: 30})
+	if len(result.CriticalSpikes) != 1 {
+		t.Fatalf("expected exactly 1 spike from magnitude, got %d: %+v", len(result.CriticalSpikes), result.CriticalSpikes)
+	}
+	spike := result.CriticalSpikes[0]
+	if spike.Start != "2026-08-03T09:00:00+03:00" || spike.MaxRatio != 1.45 {
+		t.Fatalf("wrong spike detected: %+v", spike)
+	}
+
+	// A lower custom threshold admits the flagged-but-mild record too; both
+	// qualifying records share facility-001, so they form ONE contiguous run.
+	result = Analyze(records, Config{SpikeThresholdPercent: 15})
+	if len(result.CriticalSpikes) != 1 {
+		t.Fatalf("expected 1 merged spike run at 15%% threshold, got %d", len(result.CriticalSpikes))
+	}
+	if result.CriticalSpikes[0].DurationMinutes != 2 {
+		t.Fatalf("expected merged run of 2 minutes, got %d", result.CriticalSpikes[0].DurationMinutes)
+	}
+}
+
+func TestAnalyzeCustomPeakWindow(t *testing.T) {
+	// Default path keeps dataset flags and the legacy label.
+	def := Analyze(sampleRecords(), Config{SpikeThresholdPercent: 30})
+	if def.PeakMetrics.PeakWindow != "18:00-22:00" || def.PeakMetrics.PeakHourRecords != 2 {
+		t.Fatalf("default peak behavior changed: %+v", def.PeakMetrics)
+	}
+
+	// Custom window 10:00-11:00 captures the 10:00/10:01/10:02 records;
+	// the 11:00 record is excluded because end is exclusive.
+	custom := Analyze(sampleRecords(), Config{SpikeThresholdPercent: 30, PeakStart: "10:00", PeakEnd: "11:00"})
+	if custom.PeakMetrics.PeakWindow != "10:00-11:00" {
+		t.Fatalf("expected custom label, got %q", custom.PeakMetrics.PeakWindow)
+	}
+	if custom.PeakMetrics.PeakHourRecords != 3 {
+		t.Fatalf("expected 3 records in 10:00-11:00, got %d", custom.PeakMetrics.PeakHourRecords)
+	}
+	// 10:00 (1.7) + 10:01 (1.8) + 10:02 (1.0) = 4.5.
+	if custom.PeakMetrics.TotalEnergyKWh != 4.5 {
+		t.Fatalf("expected custom peak energy 4.5, got %v", custom.PeakMetrics.TotalEnergyKWh)
+	}
+}
+
+func TestAnalyzePeakWindowWrapsMidnight(t *testing.T) {
+	// Window 22:00-02:00 wraps midnight: only the 23:30 record qualifies.
+	records := []TelemetryRecord{
+		rec("2026-08-03T13:00:00+03:00", "f1", "A", "E1", "none", "", 1.0, 50, 1.0, false),
+		rec("2026-08-03T23:30:00+03:00", "f1", "A", "E1", "none", "", 1.0, 80, 1.6, false),
+		rec("2026-08-04T01:30:00+03:00", "f1", "A", "E1", "none", "", 1.0, 60, 1.0, false),
+		rec("2026-08-04T05:00:00+03:00", "f1", "A", "E1", "none", "", 1.0, 40, 0.8, false),
+	}
+	result := Analyze(records, Config{PeakStart: "22:00", PeakEnd: "02:00"})
+	if result.PeakMetrics.PeakHourRecords != 2 {
+		t.Fatalf("expected 2 records inside wrapping window, got %d", result.PeakMetrics.PeakHourRecords)
+	}
+	if result.PeakMetrics.MaxDemandKW != 80 {
+		t.Fatalf("expected max demand 80, got %v", result.PeakMetrics.MaxDemandKW)
+	}
+}

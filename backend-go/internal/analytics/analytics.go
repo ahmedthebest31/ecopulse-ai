@@ -7,6 +7,7 @@ package analytics
 import (
 	"fmt"
 	"math"
+	"time"
 )
 
 // TelemetryRecord mirrors one record of the generated telemetry dataset.
@@ -30,9 +31,19 @@ type TelemetryRecord struct {
 	CarbonKG        float64 `json:"carbon_kg"`
 }
 
-// Config controls spike detection thresholds.
+// Config controls spike detection thresholds and the peak-hour window.
 type Config struct {
-	SpikeThresholdPercent float64 // consumption above baseline that marks a spike
+	// SpikeThresholdPercent is consumption above baseline (ratio >= 1+p/100)
+	// that marks a critical consumption spike. Defaults to 30.
+	SpikeThresholdPercent float64
+
+	// PeakStart/PeakEnd optionally override peak-hour membership as
+	// "HH:MM" clock times derived from each record's timestamp instead of
+	// trusting the dataset's is_peak_hour flag. Empty values keep the
+	// flag-based default behavior. A window where Start > End wraps across
+	// midnight.
+	PeakStart string
+	PeakEnd   string
 }
 
 // Spike describes a contiguous critical consumption anomaly for one facility.
@@ -89,10 +100,33 @@ func round4(value float64) float64 {
 
 // Analyze computes spike, maintenance, and peak-hour metrics from the records.
 // Records are expected to be chronological; runs are detected by consecutive
-// records with the same anomaly flag and facility.
+// records with the same facility (and equipment, for maintenance).
+//
+// Critical spikes are detected by magnitude: any record whose consumption is
+// at least SpikeThresholdPercent above its baseline starts or continues a
+// spike run, independent of the generator's anomaly_flag. Predictive
+// maintenance remains flag-based on micro_surge markers.
 func Analyze(records []TelemetryRecord, cfg Config) Result {
 	if cfg.SpikeThresholdPercent <= 0 {
 		cfg.SpikeThresholdPercent = 30
+	}
+	minSpikeRatio := 1 + cfg.SpikeThresholdPercent/100
+
+	// Peak membership: custom window derived from timestamps when both clock
+	// bounds are provided, otherwise the dataset flag as before.
+	useCustomPeak := cfg.PeakStart != "" && cfg.PeakEnd != ""
+	var peakStartMin, peakEndMin int
+	wraps := false
+	if useCustomPeak {
+		start, err1 := parseClock(cfg.PeakStart)
+		end, err2 := parseClock(cfg.PeakEnd)
+		if err1 == nil && err2 == nil {
+			peakStartMin = start
+			peakEndMin = end
+			wraps = start > end
+		} else {
+			useCustomPeak = false
+		}
 	}
 
 	result := Result{
@@ -114,7 +148,16 @@ func Analyze(records []TelemetryRecord, cfg Config) Result {
 		totalEnergy += rec.EnergyKWh
 		totalCarbon += rec.CarbonKG
 
-		if rec.IsPeakHour {
+		isPeak := rec.IsPeakHour
+		if useCustomPeak {
+			if ts, err := time.Parse(time.RFC3339, rec.Timestamp); err == nil {
+				minutes := ts.Hour()*60 + ts.Minute()
+				isPeak = inWindow(minutes, peakStartMin, peakEndMin, wraps)
+			} else {
+				isPeak = false
+			}
+		}
+		if isPeak {
 			peakRecords++
 			peakEnergy += rec.EnergyKWh
 			if rec.PowerKW > peakMaxPower {
@@ -122,8 +165,9 @@ func Analyze(records []TelemetryRecord, cfg Config) Result {
 			}
 		}
 
-		// Critical spike run detection (forced spikes).
-		if rec.AnomalyFlag == "forced_spike" && inSpike && rec.FacilityID == prev.FacilityID {
+		// Critical spike run detection by ratio-to-baseline magnitude.
+		spikeActive := rec.RatioToBaseline >= minSpikeRatio
+		if spikeActive && inSpike && rec.FacilityID == prev.FacilityID {
 			runSpike.End = rec.Timestamp
 			runSpike.DurationMinutes++
 			if rec.PowerKW > runSpike.MaxPowerKW {
@@ -137,7 +181,7 @@ func Analyze(records []TelemetryRecord, cfg Config) Result {
 				result.CriticalSpikes = append(result.CriticalSpikes, runSpike)
 				inSpike = false
 			}
-			if rec.AnomalyFlag == "forced_spike" {
+			if spikeActive {
 				runSpike = Spike{
 					FacilityID:      rec.FacilityID,
 					FacilityName:    rec.FacilityName,
@@ -198,14 +242,37 @@ func Analyze(records []TelemetryRecord, cfg Config) Result {
 	if totalEnergy > 0 {
 		share = peakEnergy / totalEnergy * 100
 	}
+	windowLabel := "18:00-22:00"
+	if useCustomPeak {
+		windowLabel = fmt.Sprintf("%s-%s", cfg.PeakStart, cfg.PeakEnd)
+	}
 	result.PeakMetrics = PeakMetrics{
-		PeakWindow:            "18:00-22:00",
+		PeakWindow:            windowLabel,
 		TotalEnergyKWh:        round4(peakEnergy),
 		PeakHourRecords:       peakRecords,
 		MaxDemandKW:           round4(peakMaxPower),
 		ShareOfTotalEnergyPct: round4(share),
 	}
 	return result
+}
+
+// parseClock parses an "HH:MM" 24-hour clock string into minutes since
+// midnight.
+func parseClock(value string) (int, error) {
+	t, err := time.Parse("15:04", value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid clock time %q; use HH:MM", value)
+	}
+	return t.Hour()*60 + t.Minute(), nil
+}
+
+// inWindow reports whether minutes falls inside [start, end). A window where
+// start > end wraps across midnight.
+func inWindow(minutes, start, end int, wraps bool) bool {
+	if wraps {
+		return minutes >= start || minutes < end
+	}
+	return minutes >= start && minutes < end
 }
 
 func severityLabel(raw string) string {

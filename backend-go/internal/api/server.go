@@ -6,6 +6,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -267,9 +268,51 @@ func (s *Server) handleTariffCalculate(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, breakdown)
 }
 
-func (s *Server) handleAnalyticsSpikes(w http.ResponseWriter, _ *http.Request) {
-	result := s.analyticsSnapshot()
-	s.writeJSON(w, http.StatusOK, result)
+func (s *Server) handleAnalyticsSpikes(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	thresholdParam := query.Get("spike_threshold_percent")
+	peakStart := query.Get("peak_start")
+	peakEnd := query.Get("peak_end")
+
+	// No overrides: serve the cached default aggregation.
+	if thresholdParam == "" && peakStart == "" && peakEnd == "" {
+		s.writeJSON(w, http.StatusOK, s.analyticsSnapshot())
+		return
+	}
+
+	cfg := analytics.Config{SpikeThresholdPercent: s.cfg.SpikeThresholdPct}
+	if thresholdParam != "" {
+		value, err := strconv.ParseFloat(thresholdParam, 64)
+		if err != nil || value <= 0 || value > 1000 {
+			s.writeError(w, http.StatusBadRequest, "spike_threshold_percent must be a number between 0 (exclusive) and 1000")
+			return
+		}
+		cfg.SpikeThresholdPercent = value
+	}
+	if peakStart != "" || peakEnd != "" {
+		if err := validateClockPair(peakStart, peakEnd); err != nil {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		cfg.PeakStart = peakStart
+		cfg.PeakEnd = peakEnd
+	}
+	s.writeJSON(w, http.StatusOK, analytics.Analyze(s.file.Records, cfg))
+}
+
+// validateClockPair enforces that a custom peak window is complete and that
+// both bounds are valid "HH:MM" 24-hour clock times.
+func validateClockPair(start, end string) error {
+	if start == "" || end == "" {
+		return errors.New("peak_start and peak_end must be provided together as HH:MM values")
+	}
+	if _, err := time.Parse("15:04", start); err != nil {
+		return errors.New("peak_start must be an HH:MM 24-hour clock value, e.g. 18:00")
+	}
+	if _, err := time.Parse("15:04", end); err != nil {
+		return errors.New("peak_end must be an HH:MM 24-hour clock value, e.g. 22:00")
+	}
+	return nil
 }
 
 type reportRequest struct {
