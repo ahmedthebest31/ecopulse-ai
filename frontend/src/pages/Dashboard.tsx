@@ -19,24 +19,37 @@ interface DashboardProps {
 export function Dashboard({ onStatusChange }: DashboardProps) {
   const { t } = useTranslation()
   const { state } = useAppState()
+  const { spikeThresholdPercent, peakStart, peakEnd } = state
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState(false)
   const [records, setRecords] = useState<TelemetryRecord[]>([])
   const [analytics, setAnalytics] = useState<AnalyticsResult | null>(null)
   const [facilityId, setFacilityId] = useState('all')
   const [reloadKey, setReloadKey] = useState(0)
 
+  // Deliberately independent of the translation function `t`: switching
+  // language must not refetch the whole telemetry dataset. Analytics query
+  // params ARE dependencies so threshold/peak-window edits take effect live.
   const load = useCallback(async () => {
     try {
-      const [telemetry, analysis] = await Promise.all([fetchTelemetry(), fetchAnalytics()])
+      const [telemetry, analysis] = await Promise.all([
+        fetchTelemetry(),
+        fetchAnalytics({
+          spikeThresholdPercent,
+          peakStart,
+          peakEnd,
+        }),
+      ])
       setRecords(telemetry.records)
       setAnalytics(analysis)
-    } catch {
-      setError(t('dashboard.error', { url: API_BASE_URL }))
+      setError(false)
+    } catch (err) {
+      console.error('dashboard data load failed', err)
+      setError(true)
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [spikeThresholdPercent, peakStart, peakEnd])
 
   useEffect(() => {
     void Promise.resolve().then(load)
@@ -124,12 +137,12 @@ export function Dashboard({ onStatusChange }: DashboardProps) {
   if (error) {
     return (
       <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-center dark:border-rose-900 dark:bg-rose-950/40" role="alert">
-        <p className="text-sm text-rose-800 dark:text-rose-300">{error}</p>
+        <p className="text-sm text-rose-800 dark:text-rose-300">{t('dashboard.error', { url: API_BASE_URL })}</p>
         <button
           type="button"
           onClick={() => {
             setLoading(true)
-            setError(null)
+            setError(false)
             setReloadKey((value) => value + 1)
           }}
           className="no-print mt-4 inline-flex h-9 items-center rounded-lg bg-emerald-600 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-700"

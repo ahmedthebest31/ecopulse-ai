@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import i18n, { setDocumentLanguage } from '../i18n'
 import { AppStateContext, type AppStateContextValue } from './useAppState'
-import { DEFAULT_STATE, STORAGE_KEY, type AppState } from './appStateDefaults'
+import { DEFAULT_STATE, GEMINI_KEY_STORAGE, STORAGE_KEY, type AppState } from './appStateDefaults'
 
 function mergeWithDefaults(stored: Partial<AppState>): AppState {
   const base = structuredClone(DEFAULT_STATE)
@@ -21,19 +21,43 @@ function mergeWithDefaults(stored: Partial<AppState>): AppState {
 }
 
 function loadState(): AppState {
+  let state = structuredClone(DEFAULT_STATE)
+  let legacyKey = ''
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
-      return structuredClone(DEFAULT_STATE)
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      if (typeof parsed === 'object' && parsed !== null) {
+        state = mergeWithDefaults(parsed as Partial<AppState>)
+        legacyKey =
+          typeof (parsed as Partial<AppState>).geminiCustomKey === 'string'
+            ? ((parsed as Partial<AppState>).geminiCustomKey ?? '').trim()
+            : ''
+      }
     }
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) {
-      return structuredClone(DEFAULT_STATE)
-    }
-    return mergeWithDefaults(parsed as Partial<AppState>)
   } catch {
-    return structuredClone(DEFAULT_STATE)
+    state = structuredClone(DEFAULT_STATE)
   }
+
+  // The custom Gemini key is stored in sessionStorage only. Migrate any
+  // legacy localStorage copy on first load so the plaintext key disappears
+  // from long-lived storage.
+  let sessionKey = ''
+  try {
+    sessionKey = window.sessionStorage.getItem(GEMINI_KEY_STORAGE) ?? ''
+  } catch {
+    // sessionStorage unavailable; the key simply stays memory-only.
+  }
+  if (!sessionKey && legacyKey) {
+    sessionKey = legacyKey
+    try {
+      window.sessionStorage.setItem(GEMINI_KEY_STORAGE, sessionKey)
+    } catch {
+      // Ignore: the in-memory copy still works for this tab.
+    }
+  }
+  state.geminiCustomKey = sessionKey
+  return state
 }
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
@@ -41,7 +65,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      // Persist everything EXCEPT the custom Gemini key: it must never sit
+      // in localStorage (XSS-exfiltratable, survives indefinitely).
+      const persistable: Partial<AppState> = { ...state }
+      delete persistable.geminiCustomKey
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable))
     } catch {
       // localStorage can be unavailable (private mode); state still works in memory.
     }
@@ -58,9 +86,26 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const update = useCallback((patch: Partial<AppState>) => {
     setState((prev) => ({ ...prev, ...patch }))
+    // Keep the custom Gemini key in sessionStorage (its only persistent home).
+    if (typeof patch.geminiCustomKey === 'string') {
+      try {
+        if (patch.geminiCustomKey.trim() === '') {
+          window.sessionStorage.removeItem(GEMINI_KEY_STORAGE)
+        } else {
+          window.sessionStorage.setItem(GEMINI_KEY_STORAGE, patch.geminiCustomKey)
+        }
+      } catch {
+        // sessionStorage unavailable; the in-memory state still works for this tab.
+      }
+    }
   }, [])
 
   const reset = useCallback(() => {
+    try {
+      window.sessionStorage.removeItem(GEMINI_KEY_STORAGE)
+    } catch {
+      // Ignore: resetting to defaults still succeeds in memory.
+    }
     setState(structuredClone(DEFAULT_STATE))
   }, [])
 

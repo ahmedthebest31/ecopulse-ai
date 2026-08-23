@@ -61,3 +61,9 @@ export const DEFAULT_STATE: AppState = {
 }
 
 export const STORAGE_KEY = 'ecopulse.settings.v1'
+
+// The custom Gemini key lives in sessionStorage only (cleared when the browser
+// session ends), never in localStorage: any XSS on the page could otherwise
+// exfiltrate a long-lived key. AppStateContext migrates legacy localStorage
+// copies into sessionStorage on startup.
+export const GEMINI_KEY_STORAGE = 'ecopulse.gemini.custom-key'

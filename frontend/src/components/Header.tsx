@@ -1,5 +1,6 @@
 import { Moon, Settings2, Sun, Zap } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { timezoneOffsetLabel } from '../lib/format'
 import { useAppState } from '../state/useAppState'
 
 export type HeaderStatus = 'ok' | 'warning' | 'offline'
@@ -98,8 +99,8 @@ export function Header({ status, alertCount, onOpenSettings }: HeaderProps) {
           </button>
 
           <span className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 px-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-400">
-            <span aria-hidden="true">GMT+3</span>
-            <span className="sr-only">{t('app.tagline')} · GMT+3</span>
+            <span aria-hidden="true">{timezoneOffsetLabel(state.timezone)}</span>
+            <span className="sr-only">{state.timezone}</span>
           </span>
 
           <button

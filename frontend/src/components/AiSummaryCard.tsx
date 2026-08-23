@@ -3,34 +3,49 @@ import { RefreshCw, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { postReport } from '../lib/api'
 import { useAppState } from '../state/useAppState'
+import type { AppLanguage } from '../i18n'
 import type { ReportResult } from '../types'
 
 export function AiSummaryCard() {
   const { t } = useTranslation()
   const { state } = useAppState()
-  const [result, setResult] = useState<ReportResult | null>(null)
+  const [results, setResults] = useState<Partial<Record<AppLanguage, ReportResult>>>({})
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState(false)
 
   const customKey =
     state.geminiKeySource === 'custom' && state.geminiCustomKey.trim() !== ''
       ? state.geminiCustomKey.trim()
       : undefined
 
-  const load = useCallback(async () => {
-    try {
-      const response = await postReport(state.language, customKey)
-      setResult(response)
-    } catch {
-      setError(t('dashboard.aiError'))
-    } finally {
-      setLoading(false)
-    }
-  }, [state.language, customKey, t])
+  // Per-locale cache: switching language serves the stored summary instead of
+  // silently re-calling Gemini and burning quota. The early-return path makes
+  // no state updates, so the post-fetch effect re-run settles immediately.
+  const load = useCallback(
+    async (locale: AppLanguage, force = false) => {
+      if (!force && results[locale]) {
+        return
+      }
+      setLoading(true)
+      setError(false)
+      try {
+        const response = await postReport(locale, customKey)
+        setResults((prev) => ({ ...prev, [locale]: response }))
+      } catch (err) {
+        console.error('AI summary request failed', err)
+        setError(true)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [customKey, results],
+  )
 
   useEffect(() => {
-    void Promise.resolve().then(load)
-  }, [load])
+    void Promise.resolve().then(() => void load(state.language))
+  }, [load, state.language])
+
+  const result = results[state.language]
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -42,9 +57,7 @@ export function AiSummaryCard() {
         <button
           type="button"
           onClick={() => {
-            setLoading(true)
-            setError(null)
-            void load()
+            void load(state.language, true)
           }}
           disabled={loading}
           className="no-print inline-flex h-9 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -58,7 +71,7 @@ export function AiSummaryCard() {
         {loading && !result ? (
           <p className="text-sm text-slate-500 dark:text-slate-400">{t('dashboard.loading')}</p>
         ) : error ? (
-          <p className="text-sm text-rose-700 dark:text-rose-400">{error}</p>
+          <p className="text-sm text-rose-700 dark:text-rose-400">{t('dashboard.aiError')}</p>
         ) : result ? (
           <div>
             <p className="whitespace-pre-line text-sm leading-relaxed text-slate-800 dark:text-slate-200">

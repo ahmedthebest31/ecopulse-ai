@@ -656,7 +656,7 @@ function WizardDialog({ onClose }: { onClose: () => void }) {
                 onClick={goBack}
                 className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                <ChevronLeft size={16} aria-hidden="true" />
+                <ChevronLeft size={16} className="rtl:rotate-180" aria-hidden="true" />
                 {t('wizard.back')}
               </button>
             ) : null}
@@ -676,7 +676,7 @@ function WizardDialog({ onClose }: { onClose: () => void }) {
                 className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-600 px-4 text-sm font-medium text-white transition-colors hover:bg-emerald-700"
               >
                 {t('wizard.next')}
-                <ChevronRight size={16} aria-hidden="true" />
+                <ChevronRight size={16} className="rtl:rotate-180" aria-hidden="true" />
               </button>
             )}
           </div>
