@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"backend-go/internal/ai_report"
@@ -50,6 +51,18 @@ type Server struct {
 	cfg    Config
 	file   TelemetryFile
 	gemini *ai_report.Client
+
+	// timestamps mirrors file.Records index-by-index with pre-parsed
+	// timestamps, so time-filtered requests do not re-parse RFC3339 strings
+	// on every call. timestampValid marks records whose timestamp failed to
+	// parse; they are excluded from time-filtered results only.
+	timestamps     []time.Time
+	timestampValid []bool
+
+	// analytics cache: the dataset is immutable after load, so the default
+	// aggregation is computed once and reused across requests.
+	analyticsMu     sync.Mutex
+	cachedAnalytics *analytics.Result
 }
 
 // NewServer creates a Server from the given configuration.
@@ -82,8 +95,38 @@ func (s *Server) LoadTelemetry() error {
 			s.cfg.SpikeThresholdPct = 30
 		}
 	}
+	s.timestamps = make([]time.Time, len(s.file.Records))
+	s.timestampValid = make([]bool, len(s.file.Records))
+	var unparsable int
+	for i, record := range s.file.Records {
+		ts, err := time.Parse(time.RFC3339, record.Timestamp)
+		if err != nil {
+			unparsable++
+			continue
+		}
+		s.timestamps[i] = ts
+		s.timestampValid[i] = true
+	}
+	if unparsable > 0 {
+		s.cfg.Logger.Printf("warning: %d telemetry records have unparseable timestamps and are excluded from time-filtered queries", unparsable)
+	}
+	s.cachedAnalytics = nil
 	s.cfg.Logger.Printf("loaded %d telemetry records from %s", len(s.file.Records), s.cfg.TelemetryPath)
 	return nil
+}
+
+// analyticsSnapshot returns the default aggregation over the loaded dataset,
+// computing it on first use and reusing it for every later request.
+func (s *Server) analyticsSnapshot() analytics.Result {
+	s.analyticsMu.Lock()
+	defer s.analyticsMu.Unlock()
+	if s.cachedAnalytics == nil {
+		result := analytics.Analyze(s.file.Records, analytics.Config{
+			SpikeThresholdPercent: s.cfg.SpikeThresholdPct,
+		})
+		s.cachedAnalytics = &result
+	}
+	return *s.cachedAnalytics
 }
 
 // maxBodyBytes caps JSON request bodies so one request cannot force the
@@ -168,16 +211,21 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		limit = parsedLimit
 	}
 
-	selected := make([]analytics.TelemetryRecord, 0, len(s.file.Records))
-	for _, record := range s.file.Records {
+	capacity := len(s.file.Records)
+	if limit > 0 && limit < capacity {
+		capacity = limit
+	}
+	selected := make([]analytics.TelemetryRecord, 0, capacity)
+	timeFiltered := start != nil || end != nil
+	for i, record := range s.file.Records {
 		if facilityID != "" && record.FacilityID != facilityID {
 			continue
 		}
-		if start != nil || end != nil {
-			ts, err := time.Parse(time.RFC3339, record.Timestamp)
-			if err != nil {
+		if timeFiltered {
+			if !s.timestampValid[i] {
 				continue
 			}
+			ts := s.timestamps[i]
 			if start != nil && ts.Before(*start) {
 				continue
 			}
@@ -220,9 +268,7 @@ func (s *Server) handleTariffCalculate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAnalyticsSpikes(w http.ResponseWriter, _ *http.Request) {
-	result := analytics.Analyze(s.file.Records, analytics.Config{
-		SpikeThresholdPercent: s.cfg.SpikeThresholdPct,
-	})
+	result := s.analyticsSnapshot()
 	s.writeJSON(w, http.StatusOK, result)
 }
 
@@ -232,9 +278,7 @@ type reportRequest struct {
 }
 
 func (s *Server) buildReportMetrics() ai_report.Metrics {
-	result := analytics.Analyze(s.file.Records, analytics.Config{
-		SpikeThresholdPercent: s.cfg.SpikeThresholdPct,
-	})
+	result := s.analyticsSnapshot()
 	return ai_report.Metrics{
 		TotalEnergyKWh:     result.TotalEnergyKWh,
 		TotalCarbonKG:      result.TotalCarbonKG,
