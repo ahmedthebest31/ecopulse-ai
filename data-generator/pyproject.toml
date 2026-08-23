@@ -1,6 +1,7 @@
 [project]
 name = "data-generator"
 version = "0.1.0"
+description = "EcoPulse AI telemetry dataset simulator (pure stdlib)."
 requires-python = ">=3.12"
 dependencies = []
 
@@ -8,3 +9,10 @@ dependencies = []
 dev = [
     "ruff>=0.16.0",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
