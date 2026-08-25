@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-go:
+    name: Go backend (vet, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend-go/go.mod
+      - name: Verify formatting (gofmt)
+        working-directory: backend-go
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        working-directory: backend-go
+        run: go vet ./...
+      - name: Test
+        working-directory: backend-go
+        run: go test ./...
+      - name: Build
+        working-directory: backend-go
+        run: go build ./...
+
+  data-generator:
+    name: Python generator (ruff, smoke run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: data-generator/uv.lock
+      - name: Ruff lint
+        working-directory: data-generator
+        run: uv run ruff check .
+      - name: Smoke generation into temp dir
+        working-directory: data-generator
+        env:
+          SMOKE_DIR: ${{ runner.temp }}/ecopulse-smoke
+        run: |
+          uv run python generator.py --seed 42 --out-dir "$SMOKE_DIR"
+          uv run python - <<'PY'
+          import json
+          import os
+
+          path = os.path.join(os.environ["SMOKE_DIR"], "telemetry_data.json")
+          with open(path, encoding="utf-8") as fh:
+              data = json.load(fh)
+          records = data["records"] if isinstance(data, dict) else data
+          expected = 6 * 1440
+          assert len(records) == expected, f"expected {expected} records, got {len(records)}"
+          print(f"smoke OK: {len(records)} records")
+          PY
+
+  frontend:
+    name: Frontend (lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        working-directory: frontend
+        run: pnpm lint
+      - name: Build
+        working-directory: frontend
+        run: pnpm build
