@@ -1,11 +1,12 @@
 # run.ps1 - Launch EcoPulse AI for local development and manual testing.
-# Starts the Go backend and the React (Vite) frontend in separate windows,
-# waits until both are actually online, then opens the dashboard in the
-# default browser. Both servers mirror their output into logs\*.log.
-# A watchdog polls both children every 2 seconds: if either server stops
-# responding on its port or its window exits, the launcher reports which one
-# failed, tears down everything it spawned, and exits nonzero.
-# Press Ctrl+C here to stop both servers.
+# Starts the Go backend and the React (Vite) frontend as background processes
+# inside the CURRENT terminal - no extra windows are opened, so the PowerShell
+# session you already use (PowerShell 7, pwsh) stays active and no separate
+# PowerShell 5 console appears. Each server's combined stdout and stderr are
+# redirected into logs\*.log. A watchdog polls both processes every 2 seconds:
+# if either server stops responding on its port or its process exits, the
+# launcher reports which one failed, tears everything it spawned down, and
+# exits nonzero. Press Ctrl+C here to stop both servers.
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -21,6 +22,7 @@ $backendUrl = "http://localhost:$backendPort"
 $frontendUrl = "http://localhost:$frontendPort"
 
 $script:spawned = @()
+$script:shellExe = $null
 
 function Test-PortOpen {
     param([int]$Port, [int]$TimeoutMs = 500)
@@ -49,21 +51,41 @@ function Wait-ForPort {
     return $false
 }
 
-function Start-ServerWindow {
-    param([string]$WorkingDir, [string]$Command)
-    $proc = Start-Process powershell -WorkingDirectory $WorkingDir -PassThru `
-        -ArgumentList @("-NoExit", "-Command", $Command)
+function Get-LauncherShell {
+    # Prefer PowerShell 7 (pwsh) as the child shell so the servers match the
+    # user's normal session. Fall back to Windows PowerShell 5.1 only when
+    # pwsh is not installed at all.
+    $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwsh) { return $pwsh.Source }
+    Write-Host "WARNING: pwsh (PowerShell 7) is not installed; using Windows PowerShell 5.1 as the child shell instead." -ForegroundColor Yellow
+    return (Get-Command powershell -ErrorAction Stop).Source
+}
+
+function Start-Server {
+    param([string]$WorkingDir, [string]$Command, [string]$LogFile)
+    # -NoNewWindow attaches the child to the current terminal (no new window,
+    # no separate PowerShell 5 console). The Command merges stderr into
+    # stdout and Start-Process redirects the merged stream into the per-server
+    # log file, so nothing scrolls in this terminal and the logs stay clean.
+    $proc = Start-Process -FilePath $script:shellExe -WorkingDirectory $WorkingDir `
+        -PassThru -NoNewWindow -RedirectStandardOutput $LogFile `
+        -ArgumentList @("-NoProfile", "-NoLogo", "-Command", $Command)
     $script:spawned += $proc.Id
     return $proc
 }
 
 function Stop-SpawnedServers {
     foreach ($pidToKill in $script:spawned) {
+        $stillRunning = Get-Process -Id $pidToKill -ErrorAction SilentlyContinue
+        if (-not $stillRunning) {
+            Write-Host "Process $pidToKill already stopped (for example, by Ctrl+C)." -ForegroundColor Gray
+            continue
+        }
         taskkill /PID $pidToKill /T /F 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Stopped process tree $pidToKill." -ForegroundColor Gray
         } else {
-            Write-Host "WARNING: taskkill exited with code $LASTEXITCODE for process $pidToKill; it may have already exited. Close any leftover window manually." -ForegroundColor Yellow
+            Write-Host "WARNING: taskkill failed for process $pidToKill; kill it manually with: taskkill /PID $pidToKill /T /F" -ForegroundColor Yellow
         }
     }
 }
@@ -98,18 +120,18 @@ if (Test-PortOpen $frontendPort) {
 
 try {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $script:shellExe = Get-LauncherShell
 
-    # Tee each child's combined output into logs\*.log while keeping the live
-    # window visible. The merge happens inside cmd.exe so PowerShell only ever
-    # sees plain text lines (no ErrorRecord framing noise in the logs).
-    $backendCmd = "cmd /c `"go run cmd/server/main.go 2>&1`" | Tee-Object -FilePath '$backendLog'"
-    $frontendCmd = "cmd /c `"pnpm dev 2>&1`" | Tee-Object -FilePath '$frontendLog'"
+    # Each child merges its server's stderr into stdout inside cmd.exe, then
+    # Start-Process redirects the merged stream to the per-server log file.
+    $backendCmd = "cmd /c `"go run cmd/server/main.go 2>&1`""
+    $frontendCmd = "cmd /c `"pnpm dev 2>&1`""
 
-    Write-Host "Starting Go backend on $backendUrl ..." -ForegroundColor Cyan
-    $backendShell = Start-ServerWindow $backendDir $backendCmd
+    Write-Host "Starting Go backend on $backendUrl (in this terminal) ..." -ForegroundColor Cyan
+    $backendShell = Start-Server $backendDir $backendCmd $backendLog
 
-    Write-Host "Starting React frontend on $frontendUrl ..." -ForegroundColor Cyan
-    $frontendShell = Start-ServerWindow $frontendDir $frontendCmd
+    Write-Host "Starting React frontend on $frontendUrl (in this terminal) ..." -ForegroundColor Cyan
+    $frontendShell = Start-Server $frontendDir $frontendCmd $frontendLog
 
     Write-Host "Waiting for the Go backend to come online (up to 90s)..." -ForegroundColor Gray
     if (-not (Wait-ForPort $backendPort 90)) {
@@ -127,10 +149,11 @@ try {
 
     Write-Host ""
     Write-Host "Press Ctrl+C here to stop both servers." -ForegroundColor Yellow
-    Write-Host "You can also close the two server windows manually." -ForegroundColor Gray
-    Write-Host "Server output is mirrored to:" -ForegroundColor Gray
+    Write-Host "Both servers run invisibly in this terminal - no extra windows are opened." -ForegroundColor Gray
+    Write-Host "Server output is redirected to:" -ForegroundColor Gray
     Write-Host "  $backendLog" -ForegroundColor Gray
     Write-Host "  $frontendLog" -ForegroundColor Gray
+    Write-Host "Watch a live tail with: Get-Content -Wait $backendLog" -ForegroundColor Gray
     Write-Host "The launcher watches both servers and shuts everything down if either crashes." -ForegroundColor Gray
 
     # Watchdog: detect a crashed/exited child within one poll interval instead
@@ -139,13 +162,13 @@ try {
     while ($true) {
         Start-Sleep -Seconds 2
         if ($backendShell.HasExited) {
-            throw "Go backend window exited unexpectedly. See $backendLog."
+            throw "Go backend process exited unexpectedly. See $backendLog."
         }
         if (-not (Test-PortOpen $backendPort)) {
             throw "Go backend stopped responding on port $backendPort. See $backendLog."
         }
         if ($frontendShell.HasExited) {
-            throw "React frontend window exited unexpectedly. See $frontendLog."
+            throw "React frontend process exited unexpectedly. See $frontendLog."
         }
         if (-not (Test-PortOpen $frontendPort)) {
             throw "React frontend stopped responding on port $frontendPort. See $frontendLog."
