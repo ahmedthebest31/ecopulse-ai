@@ -1,12 +1,4 @@
-# run.ps1 - Launch EcoPulse AI for local development and manual testing.
-# Starts the Go backend and the React (Vite) frontend as background processes
-# inside the CURRENT terminal - no extra windows are opened, so the PowerShell
-# session you already use (PowerShell 7, pwsh) stays active and no separate
-# PowerShell 5 console appears. Each server's combined stdout and stderr are
-# redirected into logs\*.log. A watchdog polls both processes every 2 seconds:
-# if either server stops responding on its port or its process exits, the
-# launcher reports which one failed, tears everything it spawned down, and
-# exits nonzero. Press Ctrl+C here to stop both servers.
+# run.ps1 - EcoPulse AI dev launcher for Windows.
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -52,9 +44,6 @@ function Wait-ForPort {
 }
 
 function Get-LauncherShell {
-    # Prefer PowerShell 7 (pwsh) as the child shell so the servers match the
-    # user's normal session. Fall back to Windows PowerShell 5.1 only when
-    # pwsh is not installed at all.
     $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
     if ($pwsh) { return $pwsh.Source }
     Write-Host "WARNING: pwsh (PowerShell 7) is not installed; using Windows PowerShell 5.1 as the child shell instead." -ForegroundColor Yellow
@@ -63,10 +52,6 @@ function Get-LauncherShell {
 
 function Start-Server {
     param([string]$WorkingDir, [string]$Command, [string]$LogFile)
-    # -NoNewWindow attaches the child to the current terminal (no new window,
-    # no separate PowerShell 5 console). The Command merges stderr into
-    # stdout and Start-Process redirects the merged stream into the per-server
-    # log file, so nothing scrolls in this terminal and the logs stay clean.
     $proc = Start-Process -FilePath $script:shellExe -WorkingDirectory $WorkingDir `
         -PassThru -NoNewWindow -RedirectStandardOutput $LogFile `
         -ArgumentList @("-NoProfile", "-NoLogo", "-Command", $Command)
@@ -122,8 +107,6 @@ try {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $script:shellExe = Get-LauncherShell
 
-    # Each child merges its server's stderr into stdout inside cmd.exe, then
-    # Start-Process redirects the merged stream to the per-server log file.
     $backendCmd = "cmd /c `"go run cmd/server/main.go 2>&1`""
     $frontendCmd = "cmd /c `"pnpm dev 2>&1`""
 
@@ -156,9 +139,6 @@ try {
     Write-Host "Watch a live tail with: Get-Content -Wait $backendLog" -ForegroundColor Gray
     Write-Host "The launcher watches both servers and shuts everything down if either crashes." -ForegroundColor Gray
 
-    # Watchdog: detect a crashed/exited child within one poll interval instead
-    # of sleeping blindly. Any failure throws so the finally block below stops
-    # BOTH servers and the script exits nonzero.
     while ($true) {
         Start-Sleep -Seconds 2
         if ($backendShell.HasExited) {

@@ -51,6 +51,8 @@ Four operational modules run on top of one measured data pipeline:
 - `frontend/` — React 19 + Vite 8 + TypeScript dashboard: full Arabic RTL / English LTR,
   five-step setup wizard, TanStack event table with CSV export, Recharts live chart,
   print-ready report view, WCAG-conscious keyboard and ARIA support.
+- **Packaging** — one-click launchers for Windows (`run.ps1`), Linux and macOS (`run.sh`),
+  and a production-ready single-container `Dockerfile` (nginx + Go API, dataset baked in).
 
 ```
 generator.py ──▶ telemetry_data.json (8,640 records) ──▶ Go engine (:8080) ──▶ React dashboard (:5173)
@@ -125,21 +127,49 @@ $$\text{Gross savings} = 1{,}576{,}511 + 317{,}857 + 447{,}064 = 2{,}341{,}432 \
 
 Prerequisites: Go 1.26+, Node 22+ with pnpm 11, Python 3.12 with uv.
 
+### One-command launcher
+
 ```powershell
-# 1) generate the telemetry dataset (deterministic, seed 42)
-cd data-generator
-uv run python generator.py
+# Windows
+.\run.ps1
+```
 
-# 2) launch backend + frontend together, or start them manually
-cd ..
-.\run.ps1        # opens both servers, mirrors logs into logs\, watches for crashes
+```bash
+# Linux / macOS
+./run.sh
+```
 
-# manual alternative:
+Both open the backend and frontend invisibly in the current terminal, mirror their
+logs into `logs\{backend,frontend}.log`, and shut everything down if either server
+crashes (or when you press Ctrl+C). The dataset is generated the first time and reused
+afterwards:
+
+```powershell
+cd data-generator ; uv run python generator.py    # deterministic, seed 42
+```
+
+Or start each part manually:
+
+```powershell
 cd backend-go ; go run ./cmd/server
 cd frontend   ; pnpm dev      # then open http://localhost:5173
 ```
 
 The generator also accepts `--config`, `--seed`, and `--out-dir`; all writes are atomic.
+
+### Docker (production-ready single container)
+
+The bundled `Dockerfile` produces one self-contained image: the dashboard (nginx) and
+the Go API behind it, with the validated dataset baked in. No local Go/Node toolchain is
+needed — the image is built from source and runs on any Docker host:
+
+```bash
+docker build -t ecopulse-ai .
+docker run -d -p 8080:80 -p 80:80 --name ecopulse ecopulse-ai
+# open http://localhost
+# check it:  curl -s http://localhost/api/health
+# logs:      docker logs -f ecopulse
+```
 
 ## 7. Verification
 
