@@ -66,7 +66,7 @@ jobs:
           PY
 
   frontend:
-    name: Frontend (lint, build)
+    name: Frontend (lint, test, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -85,6 +85,9 @@ jobs:
       - name: Lint
         working-directory: frontend
         run: pnpm lint
+      - name: Test
+        working-directory: frontend
+        run: pnpm test
       - name: Build
         working-directory: frontend
         run: pnpm build
