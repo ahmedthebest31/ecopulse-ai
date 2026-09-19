@@ -53,7 +53,7 @@ Four operational modules run on top of one measured data pipeline:
   print-ready report view, WCAG-conscious keyboard and ARIA support.
 - `hardware-sim/` — Wokwi ESP32 factory-area simulator: current transformer (potentiometer),
   voltage tap, load-shed relay, buzzer + LEDs, posting live telemetry into the Go engine and
-  reacting to its actuation commands (see the hardware-in-the-loop subsection below).
+  reacting to its actuation commands (see section 4).
 - **Packaging** — one-click launchers for Windows (`run.ps1`), Linux and macOS (`run.sh`),
   and a production-ready single-container `Dockerfile` (nginx + Go API, dataset baked in).
 
@@ -62,55 +62,133 @@ generator.py ──▶ telemetry_data.json (8,640 records) ──▶ Go engine (
      seed 42          6 facilities × 1,440 min              REST + CORS            AR/EN · dark/light
 ```
 
-### Hardware-in-the-loop simulation
+## 4. Hardware & IoT Simulation
 
-Factory-area telemetry also arrives from a simulated ESP32 (Wokwi web IDE) over a dedicated
-two-way channel: the device posts every ~5 s, and the Go engine answers with an actuation
-decision computed from the exact same tariff and peak-window policy as the dashboard:
+A live two-way channel connects the factory floor to the analytics engine: a simulated
+ESP32 (Wokwi) posts electrical readings every ~5 s, and the Go engine answers with an
+actuation decision computed from the **same seven-tier tariff and peak-window policy** as
+the dashboard. The device half lives in `hardware-sim/`; the backend half is the `iot`
+registry (`backend-go/internal/iot`).
 
+### The two-way loop
+
+```mermaid
+sequenceDiagram
+    participant ESP as ESP32 (Wokwi)
+    participant GW as Wokwi Private IoT Gateway
+    participant API as Go engine (port 8080)
+    participant REG as iot.Registry
+
+    Note over ESP: sample CT every 250 ms, 16-point moving average
+    Note over ESP: kW = sqrt(3) * 380 * amps * 0.9 / 1000
+
+    loop Every ~5 s
+        ESP->>GW: POST /api/telemetry/iot (reading payload)
+        GW->>API: forward via host.wokwi.internal:8080
+        API->>REG: Submit(reading)
+        REG->>REG: per-UTC-day kWh, tier + peak-window check
+        REG-->>API: Response {current_tier, is_peak_hour, alert_level}
+        API-->>ESP: HTTP 200 OK actuation decision
+
+        alt NORMAL
+            ESP->>ESP: relay on (fail-safe), green heartbeat
+        else WARNING
+            ESP->>ESP: red LED flash + one beep, relay untouched
+        else CRITICAL
+            ESP->>ESP: relay shed (NC opens), triple beep, 60 s arm lock
+        end
+    end
+
+    API->>REG: GET /api/telemetry/iot/devices
+    REG-->>API: live registry snapshot (today kWh, tier, alert)
 ```
-hardware-sim/ (Wokwi ESP32) ──▶ POST /api/telemetry/iot ──▶ Go engine (7-tier tariff + peak policy)
-      ──▶ { status, current_tier, is_peak_hour, load_shed_recommended, alert_level }
-      ──▶ relay + red/green LEDs + buzzer back on the ESP32
+
+### Components and wiring
+
+Every part in `hardware-sim/diagram.json` maps to a real, factory-buyable component
+(`hardware-sim/hardware_bom.md`):
+
+```mermaid
+flowchart LR
+    CT["100 A split-core CT (potentiometer)"] -->|GPIO34 ADC| ESP["ESP32-WROOM-32 DevKit"]
+    ESP -->|"GPIO2 via 220 ohm"| LED1["Green LED (OK)"]
+    ESP -->|"GPIO4 via 220 ohm"| LED2["Red LED (WARN)"]
+    ESP -->|GPIO17| BZ["Passive buzzer"]
+    ESP -->|GPIO32| RL["Relay module (IN)"]
+    RL -->|"COM to NC"| L["HVAC load — default ON"]
+    PSU["DIN-rail PSU 380 V to 5 V"] -->|"5 V + shared GND"| ESP
+    PSU -->|"5 V"| RL
+    PSU -->|"5 V"| BZ
 ```
 
-- **What the firmware simulates** (`hardware-sim/sketch.ino`): a factory supply on 380 V
-  three-phase; the potentiometer stands in for a 100 A split-core current transformer, sampled
-  every 250 ms through a 16-point moving average, converted to kW with
-  `kW = √3 × 380 × amps × 0.9 / 1000`, and integrated into kWh. The loop is non-blocking
-  (`millis()`-only, no bus-waiting), so reporting and actuation never starve each other.
-- **What the backend does with it**: the `iot` registry keeps a rolling per-device kWh total
-  for the current UTC day, maps it onto the official seven-tier Egyptian tariff, applies the
-  configured peak window, and returns one of `NORMAL` / `WARNING` / `CRITICAL` plus a
-  `load_shed_recommended` flag.
-- **Actuation policy**: the firmware sheds the simulated HVAC relay only on `CRITICAL`
-  (tier ≥ 7, or tier ≥ 6 inside peak hours), leaving the relay defaulted to load-on so a
-  failed link fails safe; WARNING flashes the red LED; a green heartbeat confirms successful
-  posting. A physical build mirrors the simulator (SCT-013, ZMPT101B, relay on the NC contact)
-  — see `hardware-sim/hardware_bom.md` for the Egyptian-supplier BOM and 380 V safety notes.
-- **Running it**: open `https://wokwi.com/projects/new/esp32`, paste `hardware-sim/diagram.json`
-  and `hardware-sim/sketch.ino`, and run `cd backend-go && go run ./cmd/server` locally on
-  :8080. The simulator reaches the host through Wokwi's Private IoT Gateway at
-  `host.wokwi.internal:8080`; a physical device would set `BACKEND_HOST` to the gateway's LAN
-  IP instead.
-- **Contract** (schema lives in `backend-go/internal/iot`):
+The potentiometer stands in for a 100 A split-core current transformer sampled every 250 ms
+through a 16-point moving average; the firmware converts to kW with
+`kW = √3 × 380 × amps × 0.9 / 1000` (three-phase 380 V) and integrates the result into kWh.
+The loop is non-blocking (`millis()`-only, no bus-waiting), so reporting and actuation never
+starve each other.
+
+### What the engine decides
+
+For each POST, the `iot` registry keeps a rolling per-device kWh total for the current UTC
+day, maps it onto the official seven-tier Egyptian tariff, and applies the configured peak
+window (default `18:00–22:00`, loaded from the telemetry dataset):
+
+- `NORMAL` — the default state; `is_peak_hour` still reports whether the device is inside
+  the window.
+- `WARNING` — tier ≥ 6, or tier ≥ 4 inside peak hours.
+- `CRITICAL` — tier ≥ 7, or tier ≥ 6 inside peak hours. Always dominates `WARNING`.
+- `load_shed_recommended` is `true` exactly when `CRITICAL` or (peak hours and tier ≥ 6).
+
+### Actuation on the device
+
+- `CRITICAL` pulls the relay `IN` low, opening the COM–NC contact and shedding the HVAC load;
+  the firmware triggers a triple beep and a fast red blink, then re-arms the relay only after
+  a 60 s guard window.
+- `WARNING` flashes the red LED slowly with a single beep; the relay stays untouched.
+- `NORMAL` blinks the green LED as a heartbeat confirming each successful POST.
+- The relay starts high (load-on) and stays high on any communication failure, so a dead link
+  fails safe instead of dropping production load.
+
+### JSON contract
+
+Schema lives in `backend-go/internal/iot`. POST request body to `/api/telemetry/iot`:
 
 ```json
 { "device_id": "esp32-factory-001", "timestamp": "2026-08-03T18:30:00Z",
   "amperage": 42.5, "voltage": 380.0, "kilowatts": 25.2, "accumulated_kwh": 112.7 }
 ```
 
-POST request body to `/api/telemetry/iot` — and the 200 OK response to it:
+And the 200 OK response carrying the actuation decision:
 
 ```json
 { "status": "ok", "current_tier": 4, "is_peak_hour": true,
   "load_shed_recommended": false, "alert_level": "WARNING" }
 ```
 
-- `GET /api/telemetry/iot/devices` lists the live registry: per-device today kWh, current
-  tier and alert level, sorted by device id.
+`GET /api/telemetry/iot/devices` lists the live registry: per-device today kWh, current tier
+and alert level, sorted by device id.
 
-## 4. Measured results — one certified 24-hour cycle
+### Running the simulator on Wokwi
+
+Quick start on the Wokwi web canvas:
+
+1. Open `https://wokwi.com/projects/new/esp32`.
+2. Replace the generated `diagram.json` with `hardware-sim/diagram.json`.
+3. Replace the generated `sketch.ino` with `hardware-sim/sketch.ino`.
+4. Start the Go engine locally so it listens on :8080 (`cd backend-go && go run ./cmd/server`),
+   then press the play button. The firmware joins the open `Wokwi-GUEST` network and reaches
+   the engine through Wokwi's Private IoT Gateway at `host.wokwi.internal:8080`.
+
+VS Code alternative: install the Wokwi extension (`wokwi.wokwi-vscode`), open `hardware-sim/`
+as a project, and run it from the extension panel — the extension bundles its own private
+gateway. Physical hardware swaps `host.wokwi.internal` for the gateway's LAN IP in the
+firmware's `BACKEND_HOST` and keeps everything else identical.
+
+GitHub renders the Mermaid diagrams above natively, so no image assets are committed. The
+hardware integration reference and the full telemetry contract also live in
+`docs/IOT_HARDWARE_INTEGRATION.md`.
+
+## 5. Measured results — one certified 24-hour cycle
 
 Every number below is recomputed three independent ways (generator summary ==
 independent Python recompute == live backend endpoint) from the seed-42 dataset.
@@ -147,7 +225,7 @@ $$\text{PeakShare} = \frac{\text{PeakEnergy}}{\text{TotalEnergy}} \times 100 = \
 - Engine outcome: **18 critical spike runs** and **12 predictive-maintenance alerts**
   (30 operational events that previously went unobserved), matching the injected truth.
 
-## 5. Modeled annual impact
+## 6. Modeled annual impact
 
 Forward-looking figures are explicitly labeled *modeled*; every formula is shown so any
 reviewer can recompute them from the measured baseline. Stated assumptions:
@@ -174,7 +252,7 @@ $$\text{Gross savings} = 1{,}576{,}511 + 317{,}857 + 447{,}064 = 2{,}341{,}432 \
 - Year-1 ROI: `(2,341,432 − 90,000 − 900,000) ÷ 900,000 =` **150%**.
 - Five-year cumulative net: **10,357,160 EGP ≈ 214,000 USD**.
 
-## 6. Quick start
+## 7. Quick start
 
 Prerequisites: Go 1.26+, Node 22+ with pnpm 11, Python 3.12 with uv.
 
@@ -222,7 +300,7 @@ docker run -d -p 8080:80 -p 80:80 --name ecopulse ecopulse-ai
 # logs:      docker logs -f ecopulse
 ```
 
-## 7. Verification
+## 8. Verification
 
 - Backend: `gofmt` clean, `go vet ./...` clean, `go test ./...` green across
   tariff / analytics / ai_report / iot / api packages.
@@ -231,12 +309,14 @@ docker run -d -p 8080:80 -p 80:80 --name ecopulse ecopulse-ai
 - Frontend: `pnpm lint` and `pnpm build` clean.
 - GitHub Actions CI runs all of the above on every push and pull request.
 
-## 8. Documentation
+## 9. Documentation
 
 Submission dossier for the Initiative (project proposal against the six official SGG
-criteria, economic feasibility study, submission checklist) lives in `docs/`.
+criteria, economic feasibility study, submission checklist) lives in `docs/`. The IoT
+hardware integration reference and the full two-way telemetry contract are specified in
+`docs/IOT_HARDWARE_INTEGRATION.md`.
 
-## 9. License
+## 10. License
 
 Proprietary — evaluation use for the SGG initiative only. Copying, downloading,
 modification, redistribution, and any other exploitation are prohibited.
