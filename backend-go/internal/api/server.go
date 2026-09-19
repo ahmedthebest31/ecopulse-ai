@@ -17,6 +17,7 @@ import (
 
 	"backend-go/internal/ai_report"
 	"backend-go/internal/analytics"
+	"backend-go/internal/iot"
 	"backend-go/internal/tariff"
 )
 
@@ -52,6 +53,7 @@ type Server struct {
 	cfg    Config
 	file   TelemetryFile
 	gemini *ai_report.Client
+	iot    *iot.Registry
 
 	// timestamps mirrors file.Records index-by-index with pre-parsed
 	// timestamps, so time-filtered requests do not re-parse RFC3339 strings
@@ -74,6 +76,7 @@ func NewServer(cfg Config) *Server {
 	return &Server{
 		cfg:    cfg,
 		gemini: ai_report.NewClient(cfg.GeminiAPIKey, cfg.GeminiModel).WithLogger(cfg.Logger),
+		iot:    iot.NewRegistry(iot.Config{}),
 	}
 }
 
@@ -112,6 +115,9 @@ func (s *Server) LoadTelemetry() error {
 		s.cfg.Logger.Printf("warning: %d telemetry records have unparseable timestamps and are excluded from time-filtered queries", unparsable)
 	}
 	s.cachedAnalytics = nil
+	if s.file.PeakWindow.Start != "" && s.file.PeakWindow.End != "" {
+		s.iot.SetPeakWindow(s.file.PeakWindow.Start, s.file.PeakWindow.End)
+	}
 	s.cfg.Logger.Printf("loaded %d telemetry records from %s", len(s.file.Records), s.cfg.TelemetryPath)
 	return nil
 }
@@ -164,6 +170,32 @@ func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any)
 		return fmt.Errorf("trailing data after JSON value")
 	}
 	return nil
+}
+
+// handleTelemetryIOT ingests one ESP32 reading and returns the actuation
+// contract (tariff tier, peak membership, load-shed recommendation) that the
+// firmware turns into relay and indicator behavior.
+func (s *Server) handleTelemetryIOT(w http.ResponseWriter, r *http.Request) {
+	var reading iot.Reading
+	if err := s.decodeJSONBody(w, r, &reading); err != nil {
+		return
+	}
+	response, err := s.iot.Submit(reading)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, response)
+}
+
+// handleTelemetryIOTDevices lists the devices that have reported to the
+// server, with their rolling daily consumption and current alert level.
+func (s *Server) handleTelemetryIOTDevices(w http.ResponseWriter, _ *http.Request) {
+	devices := s.iot.Devices()
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"count":   len(devices),
+		"devices": devices,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

@@ -51,6 +51,9 @@ Four operational modules run on top of one measured data pipeline:
 - `frontend/` — React 19 + Vite 8 + TypeScript dashboard: full Arabic RTL / English LTR,
   five-step setup wizard, TanStack event table with CSV export, Recharts live chart,
   print-ready report view, WCAG-conscious keyboard and ARIA support.
+- `hardware-sim/` — Wokwi ESP32 factory-area simulator: current transformer (potentiometer),
+  voltage tap, load-shed relay, buzzer + LEDs, posting live telemetry into the Go engine and
+  reacting to its actuation commands (see the hardware-in-the-loop subsection below).
 - **Packaging** — one-click launchers for Windows (`run.ps1`), Linux and macOS (`run.sh`),
   and a production-ready single-container `Dockerfile` (nginx + Go API, dataset baked in).
 
@@ -58,6 +61,54 @@ Four operational modules run on top of one measured data pipeline:
 generator.py ──▶ telemetry_data.json (8,640 records) ──▶ Go engine (:8080) ──▶ React dashboard (:5173)
      seed 42          6 facilities × 1,440 min              REST + CORS            AR/EN · dark/light
 ```
+
+### Hardware-in-the-loop simulation
+
+Factory-area telemetry also arrives from a simulated ESP32 (Wokwi web IDE) over a dedicated
+two-way channel: the device posts every ~5 s, and the Go engine answers with an actuation
+decision computed from the exact same tariff and peak-window policy as the dashboard:
+
+```
+hardware-sim/ (Wokwi ESP32) ──▶ POST /api/telemetry/iot ──▶ Go engine (7-tier tariff + peak policy)
+      ──▶ { status, current_tier, is_peak_hour, load_shed_recommended, alert_level }
+      ──▶ relay + red/green LEDs + buzzer back on the ESP32
+```
+
+- **What the firmware simulates** (`hardware-sim/sketch.ino`): a factory supply on 380 V
+  three-phase; the potentiometer stands in for a 100 A split-core current transformer, sampled
+  every 250 ms through a 16-point moving average, converted to kW with
+  `kW = √3 × 380 × amps × 0.9 / 1000`, and integrated into kWh. The loop is non-blocking
+  (`millis()`-only, no bus-waiting), so reporting and actuation never starve each other.
+- **What the backend does with it**: the `iot` registry keeps a rolling per-device kWh total
+  for the current UTC day, maps it onto the official seven-tier Egyptian tariff, applies the
+  configured peak window, and returns one of `NORMAL` / `WARNING` / `CRITICAL` plus a
+  `load_shed_recommended` flag.
+- **Actuation policy**: the firmware sheds the simulated HVAC relay only on `CRITICAL`
+  (tier ≥ 7, or tier ≥ 6 inside peak hours), leaving the relay defaulted to load-on so a
+  failed link fails safe; WARNING flashes the red LED; a green heartbeat confirms successful
+  posting. A physical build mirrors the simulator (SCT-013, ZMPT101B, relay on the NC contact)
+  — see `hardware-sim/hardware_bom.md` for the Egyptian-supplier BOM and 380 V safety notes.
+- **Running it**: open `https://wokwi.com/projects/new/esp32`, paste `hardware-sim/diagram.json`
+  and `hardware-sim/sketch.ino`, and run `cd backend-go && go run ./cmd/server` locally on
+  :8080. The simulator reaches the host through Wokwi's Private IoT Gateway at
+  `host.wokwi.internal:8080`; a physical device would set `BACKEND_HOST` to the gateway's LAN
+  IP instead.
+- **Contract** (schema lives in `backend-go/internal/iot`):
+
+```json
+{ "device_id": "esp32-factory-001", "timestamp": "2026-08-03T18:30:00Z",
+  "amperage": 42.5, "voltage": 380.0, "kilowatts": 25.2, "accumulated_kwh": 112.7 }
+```
+
+POST request body to `/api/telemetry/iot` — and the 200 OK response to it:
+
+```json
+{ "status": "ok", "current_tier": 4, "is_peak_hour": true,
+  "load_shed_recommended": false, "alert_level": "WARNING" }
+```
+
+- `GET /api/telemetry/iot/devices` lists the live registry: per-device today kWh, current
+  tier and alert level, sorted by device id.
 
 ## 4. Measured results — one certified 24-hour cycle
 
@@ -174,7 +225,7 @@ docker run -d -p 8080:80 -p 80:80 --name ecopulse ecopulse-ai
 ## 7. Verification
 
 - Backend: `gofmt` clean, `go vet ./...` clean, `go test ./...` green across
-  tariff / analytics / ai_report / api packages.
+  tariff / analytics / ai_report / iot / api packages.
 - Generator: `uv run ruff check .` clean (E, F, W, I rules); smoke generation asserted
   at exactly `6 × 1,440 = 8,640` records with CSV parity.
 - Frontend: `pnpm lint` and `pnpm build` clean.

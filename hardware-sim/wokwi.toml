@@ -1,0 +1,19 @@
+# EcoPulse AI - Hardware Simulator (Wokwi) project configuration.
+#
+# The board itself is declared in diagram.json (part wokwi-esp32-devkit-v1);
+# wokwi.toml carries no "platform"/"board" key by design.
+#
+# firmware: Wokwi runs a compiled firmware image. Accepted formats are .bin,
+# .uf2, .elf and flasher_args.json for the WROVER (factory) bootloader mode -
+# raw .ino sources are compiled by the cloud editor, not by this field.
+# build/sketch.ino.elf is produced by the arduino-cli export step documented
+# in README. Change the path here if you build elsewhere.
+
+[wokwi]
+version = 1
+firmware = 'build/sketch.ino.elf'
+diagram = 'diagram.json'
+
+# WiFi is simulated on the Wokwi-GUEST network (no password, channel 6); the
+# firmware connects to it and reaches the backend through host.wokwi.internal
+# (Private IoT Gateway in the web editor, built-in in the VS Code extension).

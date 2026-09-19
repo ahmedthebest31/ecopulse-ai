@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "author": "EcoPulse AI",
+  "editor": "wokwi",
+  "parts": [
+    { "id": "esp", "type": "wokwi-esp32-devkit-v1", "left": -120, "top": -220, "rotate": 90 },
+    { "id": "adc", "type": "wokwi-potentiometer", "left": -280, "top": -60, "attrs": { "value": "512" } },
+    { "id": "res_ok", "type": "wokwi-resistor", "left": -30, "top": -30, "attrs": { "value": "220" } },
+    { "id": "led_ok", "type": "wokwi-led", "left": -10, "top": -100, "attrs": { "color": "green", "label": "OK" } },
+    { "id": "res_warn", "type": "wokwi-resistor", "left": 60, "top": 10, "attrs": { "value": "220" } },
+    { "id": "led_warn", "type": "wokwi-led", "left": 80, "top": -60, "attrs": { "color": "red", "label": "WARN" } },
+    { "id": "buzzer", "type": "wokwi-buzzer", "left": 140, "top": 60 },
+    { "id": "relay", "type": "wokwi-relay-module", "left": 220, "top": 140 },
+    { "id": "res_load", "type": "wokwi-resistor", "left": 300, "top": 80, "attrs": { "value": "220" } },
+    { "id": "led_load", "type": "wokwi-led", "left": 340, "top": 10, "attrs": { "color": "blue", "label": "HVAC" } }
+  ],
+  "connections": [
+    ["adc:VCC", "esp:3V3", "red", []],
+    ["adc:SIG", "esp:34", "green", []],
+    ["adc:GND", "esp:GND", "black", []],
+    ["esp:2", "res_ok:1", "green", []],
+    ["res_ok:2", "led_ok:A", "yellow", []],
+    ["led_ok:C", "esp:GND", "black", []],
+    ["esp:4", "res_warn:1", "red", []],
+    ["res_warn:2", "led_warn:A", "yellow", []],
+    ["led_warn:C", "esp:GND", "black", []],
+    ["buzzer:1", "esp:GND", "black", []],
+    ["buzzer:2", "esp:17", "yellow", []],
+    ["relay:IN", "esp:32", "purple", []],
+    ["relay:VCC", "esp:5V", "red", []],
+    ["relay:GND", "esp:GND", "black", []],
+    ["relay:COM", "res_load:1", "blue", []],
+    ["res_load:2", "led_load:A", "blue", []],
+    ["led_load:C", "relay:NC", "blue", []]
+  ]
+}
